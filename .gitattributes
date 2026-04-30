@@ -1,0 +1,7 @@
+* text=auto
+*.ts diff
+*.tsx diff
+*.js diff
+*.jsx diff
+*.json diff
+*.md text

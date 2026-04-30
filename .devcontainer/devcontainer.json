@@ -1,0 +1,15 @@
+{
+  "name": "TitaNet Dev",
+  "image": "mcr.microsoft.com/vscode/devcontainers/javascript-node:0-20",
+  "postCreateCommand": "npm ci",
+  "forwardPorts": [3000],
+  "workspaceFolder": "/workspace",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "esbenp.prettier-vscode",
+        "dbaeumer.vscode-eslint"
+      ]
+    }
+  }
+}

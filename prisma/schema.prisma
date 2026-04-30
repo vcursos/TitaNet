@@ -1,0 +1,790 @@
+// =============================================================================
+// TitaNet - Schema do Banco de Dados
+// Plataforma de Gestão para Provedores de Internet (ISP)
+// =============================================================================
+// Arquitetura modular: cada modelo é independente e relacionado por chaves
+// estrangeiras, permitindo expansão futura sem quebrar o esquema atual.
+//
+// Etapa 1 - Fundação Administrativa adicionou:
+//   - Campos de provedor completos em Settings (CNPJ, IE, endereço)
+//   - Campos de perfil em User (phone, active, role estendido)
+//   - ServiceCity (cidades de atendimento)
+//   - NetworkPOP (POPs)
+//   - Server (servidores: mikrotik, radius, olt, etc.)
+//   - Condominium (condomínios)
+//   - Technician (técnicos com pagamento por produção)
+//   - ServiceOrder (ordens de serviço)
+// =============================================================================
+
+generator client {
+    provider = "prisma-client-js"
+    binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x"]
+    output = "/home/ubuntu/titanet/nextjs_space/node_modules/.prisma/client"
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// USER - Administradores e operadores do painel
+// -----------------------------------------------------------------------------
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  password      String
+  // role: admin | operator | technician | salesperson | viewer
+  role          String    @default("admin")
+  phone         String?
+  active        Boolean   @default(true)
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts Account[]
+  sessions Session[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// -----------------------------------------------------------------------------
+// PLAN - Planos de internet ofertados
+// -----------------------------------------------------------------------------
+model Plan {
+  id            String   @id @default(cuid())
+  name          String
+  description   String?  @db.Text
+  downloadMbps  Int
+  uploadMbps    Int
+  price         Decimal  @db.Decimal(10, 2)
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  customers Customer[]
+  contracts Contract[]
+}
+
+// -----------------------------------------------------------------------------
+// CUSTOMER - Clientes do provedor
+// -----------------------------------------------------------------------------
+model Customer {
+  id           String   @id @default(cuid())
+
+  name         String
+  document     String   @unique
+  documentType String   @default("CPF")
+  email        String?
+  phone        String?
+
+  // Endereço
+  zipCode      String?
+  street       String?
+  number       String?
+  complement   String?
+  neighborhood String?
+  city         String?
+  state        String?
+
+  // Contrato / Plano
+  planId       String?
+  plan         Plan?    @relation(fields: [planId], references: [id], onDelete: SetNull)
+  monthlyPrice Decimal? @db.Decimal(10, 2)
+
+  // Status
+  status       String   @default("active")
+
+  // Infraestrutura
+  network      String?
+  serverHost   String?
+  equipment    String?
+  equipmentMac String?
+  pppoeUser    String?
+  ipAddress    String?
+
+  // Status online (cache via OLT/MikroTik)
+  isOnline     Boolean? @default(false)
+  lastSeen     DateTime?
+  signalDbm    Float?
+  signalCheckedAt DateTime?
+
+  // Receita Federal
+  receitaStatus    String?
+  receitaCheckedAt DateTime?
+  receitaData      Json?
+
+  // Vinculações administrativas (Etapa 1)
+  serviceCityId  String?
+  serviceCityRef ServiceCity? @relation(fields: [serviceCityId], references: [id], onDelete: SetNull)
+  condominiumId  String?
+  condominium    Condominium? @relation(fields: [condominiumId], references: [id], onDelete: SetNull)
+  popId          String?
+  pop            NetworkPOP?  @relation(fields: [popId], references: [id], onDelete: SetNull)
+
+  notes        String?  @db.Text
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  contracts    Contract[]
+  serviceOrders ServiceOrder[]
+  invoices     Invoice[]
+  payments     Payment[]
+  messageLogs    MessageLog[]
+  connectionLogs   ConnectionLog[]
+  inventoryItems   InventoryItem[]
+  inventoryMoves   InventoryMovement[]
+
+  @@index([status])
+  @@index([planId])
+  @@index([document])
+  @@index([serviceCityId])
+  @@index([condominiumId])
+  @@index([popId])
+}
+
+// -----------------------------------------------------------------------------
+// CONTRACT
+// -----------------------------------------------------------------------------
+model Contract {
+  id            String   @id @default(cuid())
+  customerId    String
+  customer      Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  planId        String?
+  plan          Plan?    @relation(fields: [planId], references: [id], onDelete: SetNull)
+
+  contractNumber String  @unique
+  status        String   @default("draft")
+  monthlyPrice  Decimal  @db.Decimal(10, 2)
+  startDate     DateTime?
+  endDate       DateTime?
+
+  content       String?  @db.Text
+  pdfUrl        String?
+
+  signatureProvider String?
+  signatureRequestId String?
+  signedAt          DateTime?
+  signedDocumentUrl String?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([status])
+}
+
+// -----------------------------------------------------------------------------
+// SETTINGS - Configurações da aplicação
+// -----------------------------------------------------------------------------
+model Settings {
+  id              String   @id @default("singleton")
+  // Branding básico
+  companyName     String   @default("TitaNet")
+  companyDocument String?    // CNPJ
+  companyAddress  String?    // legado - endereço linha única
+  companyPhone    String?
+  companyEmail    String?
+  logoUrl         String?
+
+  // Endereço estruturado do provedor (Etapa 1)
+  companyZipCode      String?
+  companyStreet       String?
+  companyNumber       String?
+  companyComplement   String?
+  companyNeighborhood String?
+  companyCity         String?
+  companyState        String?
+
+  // Documentos fiscais (Etapa 1)
+  companyIE        String?  // Inscrição Estadual
+  companyIM        String?  // Inscrição Municipal
+  companyWebsite   String?
+  companyWhatsapp  String?
+
+  // Tema (cores)
+  primaryColor    String   @default("#0066CC")
+  secondaryColor  String   @default("#FFFFFF")
+  accentColor     String   @default("#003E80")
+
+  // Integrações (chaves opcionais)
+  receitaApiKey       String?
+  oltApiUrl           String?
+  oltApiToken         String?
+  mikrotikApiUrl      String?
+  mikrotikApiUser     String?
+  mikrotikApiPassword String?
+  signatureApiKey     String?
+  signatureProvider   String?
+  smsProvider         String?
+  smsApiKey           String?
+  // Configurações de comunicação (Etapa 3)
+  emailProvider       String?  // smtp | mock
+  smtpHost            String?
+  smtpPort            Int?     @default(587)
+  smtpUser            String?
+  smtpPassword        String?
+  smtpFromEmail       String?  // remetente padrão
+  smtpFromName        String?  // nome do remetente
+  whatsappProvider    String?  // mock | evolution | z-api
+  whatsappApiUrl      String?
+  whatsappApiKey      String?
+
+  // Configurações de cobrança (Etapa 2 - Financeiro)
+  billingDueDay       Int?      @default(10)      // Dia de vencimento padrão
+  billingGracePeriod  Int?      @default(5)       // Dias de carência
+  billingInterestRate Decimal?  @db.Decimal(5,4)  // Taxa de juros diária (ex: 0.0333 = 0.0333%)
+  billingFineRate     Decimal?  @db.Decimal(5,2)  // Multa por atraso (ex: 2.00 = 2%)
+  billingAutoGenerate Boolean?  @default(false)   // Gerar faturas automaticamente
+  billingPixKey       String?                     // Chave PIX do provedor
+  billingBankName     String?
+  billingBankAgency   String?
+  billingBankAccount  String?
+  billingNotes        String?   @db.Text          // Obs padrão impressa na fatura
+
+  updatedAt       DateTime @updatedAt
+}
+
+// -----------------------------------------------------------------------------
+// SERVICE CITY - Cidades atendidas pelo provedor
+// -----------------------------------------------------------------------------
+model ServiceCity {
+  id        String   @id @default(cuid())
+  name      String
+  state     String   // UF
+  ibgeCode  String?
+  active    Boolean  @default(true)
+  notes     String?  @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pops         NetworkPOP[]
+  condominiums Condominium[]
+  customers    Customer[]
+  serviceOrders ServiceOrder[]
+}
+
+// -----------------------------------------------------------------------------
+// NETWORK POP - Pontos de Presença (POPs)
+// -----------------------------------------------------------------------------
+model NetworkPOP {
+  id          String   @id @default(cuid())
+  name        String
+  code        String?  @unique  // ex: POP-CTR-01
+  description String?  @db.Text
+
+  // Endereço
+  address     String?
+  latitude    Float?
+  longitude   Float?
+
+  cityId      String?
+  city        ServiceCity? @relation(fields: [cityId], references: [id], onDelete: SetNull)
+
+  active      Boolean  @default(true)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  servers     Server[]
+  customers   Customer[]
+}
+
+// -----------------------------------------------------------------------------
+// SERVER - Servidores (MikroTik, Radius, OLT, DNS, DHCP, etc.)
+// -----------------------------------------------------------------------------
+model Server {
+  id        String   @id @default(cuid())
+  name      String
+  type      String   // mikrotik | radius | olt | dns | dhcp | other
+  host      String?  // IP ou hostname
+  port      Int?
+  username  String?
+  password  String?  // criptografar em produção real
+  apiToken  String?
+  notes     String?  @db.Text
+  active    Boolean  @default(true)
+
+  popId     String?
+  pop       NetworkPOP? @relation(fields: [popId], references: [id], onDelete: SetNull)
+
+  // Status de monitoramento (Etapa 4 - Rede)
+  lastSyncAt    DateTime?
+  lastSyncError String?  @db.Text
+  onlineClients Int?     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  connectionLogs ConnectionLog[]
+
+  @@index([type])
+  @@index([popId])
+}
+
+// -----------------------------------------------------------------------------
+// CONDOMINIUM - Condomínios atendidos
+// -----------------------------------------------------------------------------
+model Condominium {
+  id        String   @id @default(cuid())
+  name      String
+  cnpj      String?
+
+  zipCode      String?
+  street       String?
+  number       String?
+  complement   String?
+  neighborhood String?
+  state        String?
+
+  cityId    String?
+  city      ServiceCity? @relation(fields: [cityId], references: [id], onDelete: SetNull)
+
+  managerName  String?
+  managerPhone String?
+  managerEmail String?
+
+  unitsCount Int?
+  notes      String? @db.Text
+  active     Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customers Customer[]
+}
+
+// -----------------------------------------------------------------------------
+// TECHNICIAN - Técnicos com pagamento por produção
+// -----------------------------------------------------------------------------
+model Technician {
+  id        String   @id @default(cuid())
+  name      String
+  document  String?  @unique
+  email     String?
+  phone     String?
+  team      String?
+  active    Boolean  @default(true)
+
+  // Pagamento por produção
+  baseSalary    Decimal? @db.Decimal(10, 2)
+  hourlyRate    Decimal? @db.Decimal(10, 2)
+  perOrderRate  Decimal? @db.Decimal(10, 2)
+
+  notes     String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  serviceOrders ServiceOrder[]
+}
+
+// -----------------------------------------------------------------------------
+// SERVICE ORDER - Ordens de Serviço
+// -----------------------------------------------------------------------------
+model ServiceOrder {
+  id        String   @id @default(cuid())
+  number    String   @unique
+
+  // Tipo: installation | maintenance | visit | removal | configuration | other
+  type      String   @default("installation")
+  // Prioridade: low | normal | high | urgent
+  priority  String   @default("normal")
+  // Status: open | scheduled | in_progress | completed | cancelled
+  status    String   @default("open")
+
+  title       String
+  description String?  @db.Text
+  resolution  String?  @db.Text
+
+  // Datas
+  scheduledFor DateTime?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  cancelledAt  DateTime?
+
+  // Endereço (se diferente do cliente)
+  address      String?
+
+  customerId   String?
+  customer     Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  technicianId String?
+  technician   Technician? @relation(fields: [technicianId], references: [id], onDelete: SetNull)
+
+  cityId       String?
+  city         ServiceCity? @relation(fields: [cityId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([technicianId])
+  @@index([customerId])
+  @@index([type])
+}
+
+// -----------------------------------------------------------------------------
+// INVOICE - Faturas mensais (Etapa 2 - Financeiro)
+// -----------------------------------------------------------------------------
+model Invoice {
+  id            String   @id @default(cuid())
+  number        String   @unique    // FAT-YYYY-NNNN
+
+  customerId    String
+  customer      Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  // Referência (mês/ano)
+  referenceMonth String             // "2026-04"
+
+  // Valores
+  amount         Decimal  @db.Decimal(10,2) // Valor base (do plano)
+  discount       Decimal  @db.Decimal(10,2) @default(0)
+  interest       Decimal  @db.Decimal(10,2) @default(0)
+  fine           Decimal  @db.Decimal(10,2) @default(0)
+  totalAmount    Decimal  @db.Decimal(10,2) // amount - discount + interest + fine
+
+  // Datas
+  dueDate        DateTime
+  paidAt         DateTime?
+
+  // Pagamento
+  paidAmount     Decimal? @db.Decimal(10,2)
+  paymentMethod  String?  // pix | boleto | card | cash | transfer | other
+
+  // Status: pending | paid | overdue | cancelled | partially_paid
+  status         String   @default("pending")
+
+  // Dados de cobrança
+  barcode        String?  // Linha digitável do boleto
+  pixCode        String?  // Código PIX copia-e-cola
+
+  notes          String?  @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  payments       Payment[]
+  paymentLinks   PaymentLink[]
+
+  @@index([customerId])
+  @@index([status])
+  @@index([dueDate])
+  @@index([referenceMonth])
+}
+
+// -----------------------------------------------------------------------------
+// PAYMENT - Registros de pagamentos (Etapa 2 - Financeiro)
+// -----------------------------------------------------------------------------
+model Payment {
+  id            String   @id @default(cuid())
+
+  invoiceId     String?
+  invoice       Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+
+  customerId    String
+  customer      Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  amount        Decimal  @db.Decimal(10,2)
+  paymentMethod String   @default("other") // pix | boleto | card | cash | transfer | other
+  paymentDate   DateTime @default(now())
+  reference     String?  // Número do comprovante / transação
+  notes         String?  @db.Text
+
+  createdBy     String?  // userId que registrou
+
+  createdAt     DateTime @default(now())
+
+  @@index([invoiceId])
+  @@index([customerId])
+  @@index([paymentDate])
+}
+
+// -----------------------------------------------------------------------------
+// MESSAGE TEMPLATE - Modelos de mensagens (Etapa 3 - Comunicação)
+// -----------------------------------------------------------------------------
+model MessageTemplate {
+  id          String   @id @default(cuid())
+  name        String                         // Nome amigável: "Lembrete de Vencimento"
+  slug        String   @unique               // billing_reminder, welcome, etc.
+  channel     String   @default("email")     // email | sms | whatsapp
+  subject     String?                        // Assunto (apenas email)
+  body        String   @db.Text              // Corpo com placeholders {{customer_name}}, etc.
+  // Evento vinculado (opcional - para automações futuras)
+  event       String?                        // invoice_created | invoice_due_soon | invoice_overdue | welcome | disconnection | custom
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  messageLogs       MessageLog[]
+  notificationRules NotificationRule[]
+}
+
+// -----------------------------------------------------------------------------
+// MESSAGE LOG - Histórico de mensagens enviadas (Etapa 3 - Comunicação)
+// -----------------------------------------------------------------------------
+model MessageLog {
+  id          String   @id @default(cuid())
+
+  customerId  String?
+  customer    Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  templateId  String?
+  template    MessageTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  channel     String   @default("email")  // email | sms | whatsapp
+  recipient   String                       // Email ou telefone do destinatário
+  subject     String?                      // Assunto renderizado
+  body        String   @db.Text            // Corpo renderizado (placeholders substituídos)
+
+  // Status: sent | failed | pending | delivered
+  status      String   @default("pending")
+  error       String?  @db.Text            // Mensagem de erro se falhou
+
+  sentAt      DateTime?
+  sentBy      String?                      // userId que disparou (null = automático)
+
+  createdAt   DateTime @default(now())
+
+  @@index([customerId])
+  @@index([channel])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// -----------------------------------------------------------------------------
+// CONNECTION LOG - Registro de conexões de clientes (Etapa 4 - Rede)
+// -----------------------------------------------------------------------------
+model ConnectionLog {
+  id          String   @id @default(cuid())
+
+  customerId  String?
+  customer    Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  serverId    String?
+  server      Server?  @relation(fields: [serverId], references: [id], onDelete: SetNull)
+
+  // Dados da conexão
+  pppoeUser   String?
+  ipAddress   String?
+  macAddress  String?
+  interface   String?            // interface no router (ether1, pppoe-user1, etc.)
+  uptime      String?            // "3d 14:22:05"
+  rxBytes     BigInt?  @default(0)
+  txBytes     BigInt?  @default(0)
+  rxRate      String?            // "45.2 Mbps"
+  txRate      String?            // "12.1 Mbps"
+  signalDbm   Float?
+
+  // Status: online | offline | blocked | limited
+  status      String   @default("online")
+  source      String   @default("mikrotik")  // mikrotik | radius | olt | manual
+
+  // Bandwidth profile aplicado
+  profileName String?            // nome do queue/profile no MikroTik
+  maxDownload String?            // "100M"
+  maxUpload   String?            // "50M"
+
+  recordedAt  DateTime @default(now())
+
+  @@index([customerId])
+  @@index([serverId])
+  @@index([status])
+  @@index([recordedAt])
+}
+
+// -----------------------------------------------------------------------------
+// INVENTORY CATEGORY - Categorias de itens do estoque (Etapa 5 - Estoque)
+// -----------------------------------------------------------------------------
+model InventoryCategory {
+  id        String   @id @default(cuid())
+  name      String   @unique     // ONU, Roteador, Cabo, Splitter, Conector, Ferragem, Outro
+  color     String?  @default("#6366f1")  // cor do badge
+  icon      String?  @default("Package")  // nome do ícone lucide
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  items     InventoryItem[]
+}
+
+// -----------------------------------------------------------------------------
+// INVENTORY ITEM - Item de estoque (Etapa 5 - Estoque)
+// -----------------------------------------------------------------------------
+model InventoryItem {
+  id            String   @id @default(cuid())
+  sku           String   @unique               // código interno: EST-NNNNN
+  name          String                         // "ONU Huawei HG8310M"
+  description   String?  @db.Text
+  brand         String?                        // Huawei, TP-Link, Intelbras, etc.
+  model         String?                        // modelo/part number
+  serialNumber  String?  @unique               // serial único (nullable p/ consumíveis)
+
+  categoryId    String?
+  category      InventoryCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  // Estoque
+  quantity      Int      @default(0)           // saldo atual
+  minStock      Int      @default(5)           // alerta de estoque mínimo
+  unitCost      Decimal? @db.Decimal(10,2)     // custo unitário
+  unitPrice     Decimal? @db.Decimal(10,2)     // preço de venda/instalação
+
+  // Localização
+  location      String?                        // "Almoxarifado POP-01", "Van Técnico 3"
+
+  // Vinculação com cliente (quando instalado)
+  customerId    String?
+  customer      Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  // Status: available | installed | defective | reserved | retired
+  status        String   @default("available")
+
+  notes         String?  @db.Text
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  movements     InventoryMovement[]
+
+  @@index([categoryId])
+  @@index([customerId])
+  @@index([status])
+  @@index([quantity])
+}
+
+// -----------------------------------------------------------------------------
+// INVENTORY MOVEMENT - Movimentações de estoque (Etapa 5 - Estoque)
+// -----------------------------------------------------------------------------
+model InventoryMovement {
+  id          String   @id @default(cuid())
+
+  itemId      String
+  item        InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  // Tipo: in (entrada) | out (saída) | transfer | adjustment | install | return
+  type        String   @default("in")
+  quantity    Int                              // positivo = entrada, negativo = saída
+  previousQty Int      @default(0)            // saldo antes
+  newQty      Int      @default(0)            // saldo depois
+
+  // Contexto
+  reason      String?                         // "Compra NF 12345", "Instalação cliente X", etc.
+  customerId  String?                         // cliente vinculado (instalação/devolução)
+  customer    Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  reference   String?                         // NF, OS, etc.
+
+  createdBy   String?                         // userId
+  createdAt   DateTime @default(now())
+
+  @@index([itemId])
+  @@index([type])
+  @@index([customerId])
+  @@index([createdAt])
+}
+
+// =============================================================================
+// ETAPA 8 - GATEWAYS EXTRAS (Pagamento PIX/Boleto + Notificações Automáticas)
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// PAYMENT LINK - Links de pagamento PIX/Boleto gerados para faturas
+// -----------------------------------------------------------------------------
+model PaymentLink {
+  id          String   @id @default(cuid())
+
+  invoiceId   String
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  // Tipo: pix | boleto
+  type        String   @default("pix")
+
+  // Dados PIX
+  pixCode     String?  @db.Text    // Código PIX copia-e-cola (BRCode/EMV)
+  pixQrBase64 String?  @db.Text    // QR code em base64 (data:image/png;base64,...)
+
+  // Dados Boleto
+  boletoBarcode   String?          // Linha digitável
+  boletoUrl       String?          // URL do boleto PDF (mock)
+
+  // Identificação externa (gateway)
+  externalId  String?              // ID do gateway externo
+  gateway     String?              // "pix_manual" | "asaas" | "mercadopago" | "pagarme" | etc.
+
+  // Status: pending | paid | expired | cancelled
+  status      String   @default("pending")
+  amount      Decimal  @db.Decimal(10,2)
+
+  expiresAt   DateTime?
+  paidAt      DateTime?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([invoiceId])
+  @@index([status])
+  @@index([externalId])
+}
+
+// -----------------------------------------------------------------------------
+// NOTIFICATION RULE - Regras de notificação automática
+// -----------------------------------------------------------------------------
+model NotificationRule {
+  id          String   @id @default(cuid())
+
+  name        String                           // "Lembrete 3 dias antes do vencimento"
+  // Evento: invoice_due_reminder | invoice_overdue | customer_welcome | order_created | order_completed | payment_confirmed | custom
+  event       String
+
+  // Canal: email | sms | whatsapp
+  channel     String   @default("email")
+
+  // Template vinculado (opcional)
+  templateId  String?
+  template    MessageTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  // Offset em dias (ex: -3 = 3 dias antes, 0 = no dia, 5 = 5 dias depois)
+  daysOffset  Int      @default(0)
+
+  // Mensagem customizada (se não usar template)
+  subject     String?
+  body        String?  @db.Text
+
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([event])
+  @@index([active])
+}
